@@ -93,6 +93,9 @@
     .island .text{ display:flex; flex-direction:column; min-width:0; }
     .island .title{ font-weight:600; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .island .subtitle{ color:var(--muted); font-size:12px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    /* Enable SVG CSS transforms on center disk */
+    #centerDisk{ transform-box: fill-box; transform-origin: center; }
   </style>
 </head>
 <body>
@@ -154,8 +157,8 @@
 
     // tide visuals
     const TIDE_WIDTH_MIN = 0.35;  // radians
-    const TIDE_WIDTH_MAX = 1.20;  // radians
-    const TIDE_MAX       = 120;   // px
+    const TIDE_WIDTH_MAX = 1.40;  // radians
+    const TIDE_MAX       = 80;   // px
     const TIDE_MIN       = 2;     // px
     const TIDE_KC        = 2800;  // central tide scale
     const TIDE_KP        = 1800;  // target tide scale
@@ -423,6 +426,15 @@
       orbitCircleEl.setAttribute('cx', oc.x);
       orbitCircleEl.setAttribute('cy', oc.y);
       orbitCircleEl.setAttribute('r', rOrbitVisual);
+      // Proportional skew for center disk based on direction and distance
+      const baseSkewX = -60; // degrees
+      const baseSkewY = 30;  // degrees
+      const factor = clamp(dSafe / (CENTER_R * 4), 0, 1); // more distance -> closer to base skew
+      const sx = (baseSkewX * factor).toFixed(2);
+      const sy = (baseSkewY * factor).toFixed(2);
+      const angDeg = (ang * 180 / Math.PI) + 40;
+      // Rotate to align axis, skew, then rotate back (right-to-left application)
+      centerDisk.style.transform = `rotate(${angDeg.toFixed(2)}deg) skew(${sx}deg, ${sy}deg) rotate(${(-angDeg).toFixed(2)}deg)`;
       // Update gradient from center to orbit center
       orbitGradEl.setAttribute('x1', String(ccxView));
       orbitGradEl.setAttribute('y1', String(ccyView));
