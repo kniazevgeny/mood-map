@@ -73,6 +73,26 @@
       background: linear-gradient(to bottom,transparent 48%, rgba(127,179,255,0.4) 49%, rgba(127,179,255,0.6) 51%, transparent 52%);
       width:1px;height:100%
     }
+
+    /* Bottom Dynamic Island */
+    .island{
+      position:fixed; left:50%; bottom:14px; transform:translateX(-50%) translateY(16px);
+      background:rgba(7,10,16,0.86);
+      border:1px solid rgba(127,179,255,0.25);
+      border-radius:14px; padding:12px 16px; display:flex; align-items:center; gap:14px;
+      color:var(--fg); box-shadow:0 6px 28px rgba(0,0,0,0.35);
+      backdrop-filter:blur(8px);
+      opacity:0; pointer-events:none; transition:opacity 180ms ease, transform 220ms ease, border-color 200ms ease, box-shadow 200ms ease;
+      width:min(820px, calc(100vw - 128px));
+      overflow:hidden;
+    }
+    .island.visible{ opacity:1; transform:translateX(-50%) translateY(0); }
+    .island .bg{ position:absolute; inset:18px; background-image:none; background-size:cover; background-position:center; background-repeat:no-repeat; background-blend-mode:overlay; filter: blur(36px) saturate(1.12) brightness(0.92); transform:scale(1.18); opacity:0.9; z-index:0; }
+    .island > :not(.bg){ position:relative; z-index:1; }
+    .island img{ width:68px; height:68px; border-radius:10px; object-fit:cover; box-shadow:0 2px 10px rgba(0,0,0,0.35); }
+    .island .text{ display:flex; flex-direction:column; min-width:0; }
+    .island .title{ font-weight:600; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .island .subtitle{ color:var(--muted); font-size:12px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   </style>
 </head>
 <body>
@@ -82,13 +102,28 @@
 
   <!-- SVG overlay (no yellow arcs anymore) -->
   <svg id="hud" class="overlay" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <!-- Gradient for orbit stroke: from center to orbit center -->
+      <linearGradient id="orbitGrad" x1="0" y1="0" x2="0" y2="0" gradientUnits="userSpaceOnUse">
+        <stop offset="0%" stop-color="var(--center-stroke)" stop-opacity="1"/>
+        <stop offset="100%" stop-color="var(--center-stroke)" stop-opacity="0.55"/>
+      </linearGradient>
+    </defs>
     <!-- Tidal ring segments -->
-    <path id="tideCenter" d="" fill="var(--tide)"  fill-opacity="0.9" stroke="none"/>
+    <path id="tideCenter" d="" fill="var(--tide)"  fill-opacity="1" stroke="none"/>
     <path id="tideTarget" d="" fill="var(--tide2)" fill-opacity="0.75" stroke="none"/>
 
     <!-- Central & target outlines -->
+    <circle id="centerDisk" cx="0" cy="0" r="0" fill="var(--center-stroke)" opacity="1"/>
     <circle id="centerCircle" cx="0" cy="0" r="0" fill="none" stroke="var(--center-stroke)" stroke-width="2.5"/>
     <circle id="targetCircle" cx="0" cy="0" r="0" fill="none" stroke="var(--center-stroke)" stroke-width="2.2" opacity="0.9"/>
+
+    <!-- Orbit tide mechanic -->
+    <circle id="orbitCircle" cx="0" cy="0" r="0" fill="var(--center-stroke)" fill-opacity="1" stroke="var(--center-stroke)" stroke-width="2" opacity="1"/>
+    <!-- Filled area between tangents and two circles -->
+    <path id="bridge" d="" fill="var(--center-stroke)" fill-opacity="1" stroke="none"/>
+    <line id="tan1" x1="0" y1="0" x2="0" y2="0" stroke="var(--center-stroke)" stroke-width="2" stroke-linecap="round"/>
+    <line id="tan2" x1="0" y1="0" x2="0" y2="0" stroke="var(--center-stroke)" stroke-width="2" stroke-linecap="round"/>
   </svg>
 
   <div class="crosshair"></div>
@@ -100,11 +135,22 @@
     <div><b>World center:</b> <span id="wcx">–</span>, <span id="wcy">–</span></div>
   </div>
 
+  <!-- Bottom Dynamic Island -->
+  <div id="island" class="island" aria-live="polite" aria-atomic="true">
+    <div class="bg"></div>
+    <img id="islandImg" alt="" />
+    <div class="text">
+      <div id="islandTitle" class="title">—</div>
+      <div id="islandSubtitle" class="subtitle">—</div>
+    </div>
+  </div>
+
   <script>
   (function(){
     // ====== CONFIG ======
     const WORLD_SIZE = 4000;
-    const CENTER_R   = 80;
+    const CENTER_R   = 100;
+    const CENTER_DISK_R = 16; // central disk radius (px), ~32x32 diameter
 
     // tide visuals
     const TIDE_WIDTH_MIN = 0.35;  // radians
@@ -115,21 +161,30 @@
     const TIDE_KP        = 1800;  // target tide scale
     const ANIM_MS        = 360;
 
-    // ====== PRESET POINTS ======
-    const PRESET_POINTS = [
-      {x:  300, y:  320, r: 16}, {x:  640, y:  880, r: 20}, {x:  960, y:  420, r: 14},
-      {x: 400, y:  760, r: 18}, {x:  480, y: 1420, r: 20}, {x:  880, y: 1660, r: 22},
-      {x: 550, y:  520, r: 16}, {x: 1740, y:  980, r: 24}, {x: 2060, y:  740, r: 18},
-      {x: 320, y: 1150, r: 20}, {x: 2600, y:  540, r: 16}, {x: 2820, y:  980, r: 18},
-      {x:  400, y: 2280, r: 20}, {x:  880, y: 2140, r: 16}, {x: 180, y: 2460, r: 22},
-      {x: 1600, y: 2200, r: 18}, {x: 1860, y: 1860, r: 20}, {x: 40, y: 2360, r: 16},
-      {x: 2480, y: 2100, r: 22}, {x: 2800, y: 2440, r: 18}, {x: 3180, y: 2240, r: 20},
-      {x: 3400, y: 1900, r: 16}, {x: 3560, y: 1500, r: 14}, {x: 720, y: 1120, r: 18},
-      {x:  260, y: 3100, r: 20}, {x:  700, y: 3400, r: 16}, {x: 100, y: 3200, r: 18},
-      {x: 1460, y: 3520, r: 20}, {x: 1900, y: 3320, r: 16}, {x: 2280, y: 3620, r: 22},
-      {x: 2660, y: 3300, r: 18}, {x: 2980, y: 3560, r: 20}, {x: 3360, y: 3240, r: 16},
-      {x: 3680, y: 3520, r: 18}, {x: 3520, y:  420, r: 22}, {x:  220, y:  600, r: 16}
-    ];
+    // orbit tide mechanic
+    const ORBIT_K        = 3800; // scale for orbit radius (visual tuning)
+    const ORBIT_MAX      = 200;  // clamp orbit radius
+
+    // point layout
+    const POINT_GRID_STEP = 200; // px spacing between points (smaller -> denser)
+    const POINT_RADIUS    = 6;   // px radius of each point (smaller -> smaller)
+    const POINT_JITTER    = 40;  // px random jitter to avoid perfect lattice
+
+    // ====== PRESET POINTS (generated dense jittered grid) ======
+    function generatePoints(){
+      const pts = [];
+      for (let x = POINT_GRID_STEP/2; x <= WORLD_SIZE - POINT_GRID_STEP/2; x += POINT_GRID_STEP){
+        for (let y = POINT_GRID_STEP/2; y <= WORLD_SIZE - POINT_GRID_STEP/2; y += POINT_GRID_STEP){
+          const jx = (Math.random()*2 - 1) * POINT_JITTER;
+          const jy = (Math.random()*2 - 1) * POINT_JITTER;
+          const px = Math.max(20, Math.min(WORLD_SIZE - 20, Math.round(x + jx)));
+          const py = Math.max(20, Math.min(WORLD_SIZE - 20, Math.round(y + jy)));
+          pts.push({ x: px, y: py, r: POINT_RADIUS });
+        }
+      }
+      return pts;
+    }
+    const PRESET_POINTS = generatePoints();
 
     // ====== DOM ======
     const viewport = document.getElementById('app');
@@ -139,7 +194,9 @@
     const tideT = document.getElementById('tideTarget');
 
     const centerCircle = document.getElementById('centerCircle');
+    const centerDisk   = document.getElementById('centerDisk');
     const targetCircle = document.getElementById('targetCircle');
+    const orbitGradEl = document.getElementById('orbitGrad');
 
     const legendId   = document.getElementById('closestId');
     const legendDist = document.getElementById('dist');
@@ -147,18 +204,72 @@
     const legendWcx  = document.getElementById('wcx');
     const legendWcy  = document.getElementById('wcy');
 
+    // Island DOM
+    const island       = document.getElementById('island');
+    const islandImg    = document.getElementById('islandImg');
+    const islandTitle  = document.getElementById('islandTitle');
+    const islandSub    = document.getElementById('islandSubtitle');
+    const islandBg     = document.querySelector('#island .bg');
+
     // ====== Build points ======
+    function buildMeta(i, p){
+      const moods = [
+        'Calm','Bright','Gloomy','Vivid','Misty','Lush','Golden','Crimson','Azure','Silent',
+        'Breezy','Cozy','Nocturne','Verdant','Amber','Frosty','Velvet','Radiant','Dusky','Serene'
+      ];
+      const places = [
+        'Harbor','Peak','Valley','Grove','Dunes','Lagoon','Meadow','Pass','Basin','Ridge',
+        'Cove','Bluff','Glade','Fjord','Reef','Bay','Hollow','Spring','Falls','Heights'
+      ];
+      const mood = moods[i % moods.length];
+      const place = places[(i * 7) % places.length];
+      const title = mood + ' ' + place;
+      const subtitle = `#${i} • (${p.x}, ${p.y}) • r=${p.r}`;
+      const image = `https://picsum.photos/seed/mood-${i}-${p.x}-${p.y}/160/120`;
+      return { title, subtitle, image };
+    }
+
     const points = PRESET_POINTS.map((p,i)=>{
       const el = document.createElement('div');
       el.className = 'point';
       el.style.left = p.x + 'px';
       el.style.top  = p.y + 'px';
       el.style.setProperty('--point-r', p.r + 'px');
-      el.title = `Point #${i} (${p.x}, ${p.y}) r=${p.r}`;
+      const meta = buildMeta(i, p);
+      el.title = `${meta.title} — ${meta.subtitle}`;
       el.dataset.id = String(i);
       world.appendChild(el);
-      return {id:i, x:p.x, y:p.y, r:p.r, el};
+      return {id:i, x:p.x, y:p.y, r:p.r, el, ...meta};
     });
+
+    const PALETTES = [
+      ['#4f7cff','#50d5ff','#22cbb8'], // cool blue/teal
+      ['#ff8a5b','#ffd166','#f4a261'], // warm sunset
+      ['#a78bfa','#7dd3fc','#60a5fa'], // violet to sky
+      ['#34d399','#a7f3d0','#22c55e'], // greens
+      ['#f472b6','#fb7185','#fca5a5']  // pink-red soft
+    ];
+
+    function setIsland(point, captured){
+      if (!point){
+        island.classList.remove('visible');
+        return;
+      }
+      islandImg.src = point.image;
+      islandImg.alt = point.title;
+      islandTitle.textContent = point.title;
+      islandSub.textContent = point.subtitle;
+      const pal = PALETTES[point.id % PALETTES.length];
+      const [c1,c2,c3] = pal;
+      island.style.setProperty('--i-c1', c1);
+      island.style.setProperty('--i-c2', c2);
+      island.style.setProperty('--i-c3', c3);
+      if (islandBg){
+        islandBg.style.backgroundImage = `linear-gradient(120deg, ${c1}, ${c2}, ${c3}), url('${point.image}')`;
+      }
+      island.classList.add('visible');
+      island.classList.toggle('captured', !!captured);
+    }
 
     // ====== Helpers ======
     const TAU = Math.PI * 2;
@@ -184,9 +295,15 @@
       };
     }
     function updateCenterCircle(){
-      centerCircle.setAttribute('cx', viewport.clientWidth/2);
-      centerCircle.setAttribute('cy', viewport.clientHeight/2);
+      const ccx = viewport.clientWidth/2;
+      const ccy = viewport.clientHeight/2;
+      centerCircle.setAttribute('cx', ccx);
+      centerCircle.setAttribute('cy', ccy);
       centerCircle.setAttribute('r', CENTER_R);
+      // center disk (tide origin)
+      centerDisk.setAttribute('cx', ccx);
+      centerDisk.setAttribute('cy', ccy);
+      centerDisk.setAttribute('r', CENTER_DISK_R);
     }
     function closestTo(cx, cy){
       let best=null, bestD2=Infinity;
@@ -272,6 +389,7 @@
         const cur = currentParams() || {ang: angNew, d, rp: p.r};
         startAnim(cur, {ang: angNew, d, rp: p.r});
         activeId = p.id;
+        setIsland(p, false);
       }
 
       const pr = currentParams() || {ang: angNew, d, rp: p.r};
@@ -282,33 +400,112 @@
       targetCircle.setAttribute('cy', targetOv.y);
       targetCircle.setAttribute('r', p.r);
 
-      // TIDE amplitude (same density: m ~ r^3, tidal ~ m / d^3)
-      const ri = CENTER_R;
+      // ORBIT tide mechanic
+      // - orbit circle radius ro = 2/3 of center circle (visual size), placed at distance R around center towards point
+      // - R = mutual force divided by distance, here approximate force ~ (m1*m2)/d^2 with m ~ r^3
+      const ri = CENTER_DISK_R; // central disk for mass
+      const rOrbitVisual = Math.max(1, Math.round((CENTER_DISK_R * 1/2))); // smaller orbit circle size
+
+      const dx = p.x - cx, dy = p.y - cy;
+      const dSafe = Math.max(1, Math.hypot(dx, dy));
       const m1 = ri*ri*ri;
       const m2 = pr.rp*pr.rp*pr.rp;
-      const distSafe = Math.max(pr.d, ri + pr.rp + 1);
+      const mutualForce = (m1 * m2) / (dSafe*dSafe);
+      const R = dSafe/4; // scaled distance
 
-      const ampCenter = clamp(TIDE_KC * (m2 / (distSafe*distSafe*distSafe)) * (ri/200), TIDE_MIN, TIDE_MAX);
-      const ampTarget = clamp(TIDE_KP * (m1 / (distSafe*distSafe*distSafe)) * (p.r/200),  TIDE_MIN, TIDE_MAX);
+      const ang = Math.atan2(dy, dx);
+      const orbitCenter = { x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R };
 
-      // Width grows with amplitude, clamped:
-      const Wc = clamp(TIDE_WIDTH_MIN + 0.004 * ampCenter, TIDE_WIDTH_MIN, TIDE_WIDTH_MAX);
-      const Wt = clamp(TIDE_WIDTH_MIN + 0.004 * ampTarget, TIDE_WIDTH_MIN, TIDE_WIDTH_MAX);
+      const oc = w2o(orbitCenter.x, orbitCenter.y);
+      const ccxView = viewport.clientWidth/2;
+      const ccyView = viewport.clientHeight/2;
+      const orbitCircleEl = document.getElementById('orbitCircle');
+      orbitCircleEl.setAttribute('cx', oc.x);
+      orbitCircleEl.setAttribute('cy', oc.y);
+      orbitCircleEl.setAttribute('r', rOrbitVisual);
+      // Update gradient from center to orbit center
+      orbitGradEl.setAttribute('x1', String(ccxView));
+      orbitGradEl.setAttribute('y1', String(ccyView));
+      orbitGradEl.setAttribute('x2', String(oc.x));
+      orbitGradEl.setAttribute('y2', String(oc.y));
 
-      // Build ring segments:
-      // - Center tide: base is the central circle (outer boundary = ri+amp), centered at pr.ang
-      tideC.setAttribute('d', ringLobePath(cx, cy, ri, ampCenter, pr.ang, Wc));
+      // Compute external tangents between two circles (center disk and orbit circle)
+      function setTangents(cx1, cy1, r1, cx2, cy2, r2){
+        const dx = cx2 - cx1, dy = cy2 - cy1;
+        const dd = Math.hypot(dx, dy);
+        if (dd === 0 || dd < Math.abs(r1 - r2)){
+          // null-orbit / concentric or one circle inside the other; hide tangents and orbit
+          document.getElementById('tan1').setAttribute('x1', '0');
+          document.getElementById('tan1').setAttribute('y1', '0');
+          document.getElementById('tan1').setAttribute('x2', '0');
+          document.getElementById('tan1').setAttribute('y2', '0');
+          document.getElementById('tan2').setAttribute('x1', '0');
+          document.getElementById('tan2').setAttribute('y1', '0');
+          document.getElementById('tan2').setAttribute('x2', '0');
+          document.getElementById('tan2').setAttribute('y2', '0');
+          document.getElementById('orbitCircle').setAttribute('r', '0');
+          return;
+        }
+        
+        // External tangents between two circles (normalized)
+        const ux = dx/dd, uy = dy/dd;           // unit vector from C1 to C2
+        const vx = -uy, vy = ux;                // perpendicular unit vector
+        const rdiff = (r2 - r1)/3;
+        const cosT = clamp(rdiff/dd, -1, 1);    // cos(theta)
+        const sinT = Math.sqrt(Math.max(0, 1 - cosT*cosT)); // sin(theta)
 
-      // - Target tide: base is the target circle, lobe toward the center (angle + PI)
-      tideT.setAttribute('d', ringLobePath(p.x, p.y, p.r, ampTarget, pr.ang + Math.PI, Wt));
+        // Unit normals from centers to tangent points (two sides)
+        const n1x = ux*cosT - vx*sinT, n1y = uy*cosT - vy*sinT;
+        const n2x = ux*cosT + vx*sinT, n2y = uy*cosT + vy*sinT;
+
+        // Start the lines slightly inside the central disk to hide edges
+        const INSET = 2; // px
+        const r1Inset = Math.max(0, r1 - INSET);
+
+        // Tangent points for lines (inset on center), and full-radius points for fill path
+        const A1 = w2o(cx1 + r1Inset*n1x, cy1 + r1Inset*n1y);
+        const A1full = w2o(cx1 + r1*n1x, cy1 + r1*n1y);
+        const B1 = w2o(cx2 + r2*n1x, cy2 + r2*n1y);
+        const A2 = w2o(cx1 + r1Inset*n2x, cy1 + r1Inset*n2y);
+        const A2full = w2o(cx1 + r1*n2x, cy1 + r1*n2y);
+        const B2 = w2o(cx2 + r2*n2x, cy2 + r2*n2y);
+
+        document.getElementById('tan1').setAttribute('x1', A1.x);
+        document.getElementById('tan1').setAttribute('y1', A1.y);
+        document.getElementById('tan1').setAttribute('x2', B1.x);
+        document.getElementById('tan1').setAttribute('y2', B1.y);
+        document.getElementById('tan2').setAttribute('x1', A2.x);
+        document.getElementById('tan2').setAttribute('y1', A2.y);
+        document.getElementById('tan2').setAttribute('x2', B2.x);
+        document.getElementById('tan2').setAttribute('y2', B2.y);
+
+        // Build filled bridge path: A1full -> arc(center r1) -> A2full -> line -> B2 -> arc(orbit r2) -> B1 -> close
+        const path = [
+          `M ${A1full.x.toFixed(2)} ${A1full.y.toFixed(2)}`,
+          `A ${r1} ${r1} 0 0 1 ${A2full.x.toFixed(2)} ${A2full.y.toFixed(2)}`,
+          `L ${B2.x.toFixed(2)} ${B2.y.toFixed(2)}`,
+          `A ${r2} ${r2} 0 0 0 ${B1.x.toFixed(2)} ${B1.y.toFixed(2)}`,
+          `Z`
+        ].join(' ');
+        document.getElementById('bridge').setAttribute('d', path);
+      }
+
+      setTangents(cx, cy, CENTER_DISK_R, orbitCenter.x, orbitCenter.y, rOrbitVisual);
 
       // Legend
-      const ro = Math.max(ri + 1, pr.d - p.r);
+      const ro = Math.max(CENTER_DISK_R + 1, pr.d - p.r);
       legendId.textContent = String(p.id);
       legendDist.textContent = d.toFixed(1);
       legendOuter.textContent = ro.toFixed(1);
       legendWcx.textContent = Math.round(cx);
       legendWcy.textContent = Math.round(cy);
+
+      // Dynamic Island capture highlight (when center circle overlaps the point)
+      const dxCap = p.x - cx, dyCap = p.y - cy;
+      const d2Cap = dxCap*dxCap + dyCap*dyCap;
+      const overlapRCap = (CENTER_R + p.r);
+      const isCaptured = d2Cap <= overlapRCap * overlapRCap;
+      island.classList.toggle('captured', isCaptured);
 
       // keep anim running
       if (anim){
@@ -348,20 +545,26 @@
       });
 
       function end(){
-        if (dragging){
-          // Snap the active point to the center after release
+        // if (dragging){
+          // Snap when the closest point overlaps/intersects the central capture circle
           const {cx, cy} = worldCenter();
           const {p} = closestTo(cx, cy);
           if (p){
-            const targetLeft = p.x - viewport.clientWidth/2;
-            const targetTop  = p.y - viewport.clientHeight/2;
-            viewport.scrollTo({ left: clamp(targetLeft, 0, WORLD_SIZE - viewport.clientWidth),
-                                top:  clamp(targetTop , 0, WORLD_SIZE - viewport.clientHeight),
-                                behavior: 'smooth' });
+            const dx = p.x - cx, dy = p.y - cy;
+            const d2 = dx*dx + dy*dy;
+            const overlapR = (CENTER_R + p.r);
+            if (d2 <= overlapR * overlapR){
+              const targetLeft = p.x - viewport.clientWidth/2;
+              const targetTop  = p.y - viewport.clientHeight/2;
+              viewport.scrollTo({ left: clamp(targetLeft, 0, WORLD_SIZE - viewport.clientWidth),
+                                  top:  clamp(targetTop , 0, WORLD_SIZE - viewport.clientHeight),
+                                  behavior: 'smooth' });
+            }
           }
-        }
+        // }
         dragging=false; viewport.classList.remove('grabbing');
       }
+      viewport.addEventListener('touchend', end);
       viewport.addEventListener('pointerup', end);
       viewport.addEventListener('pointercancel', end);
       viewport.addEventListener('pointerleave', end);
