@@ -2,28 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Scrollable World • Curved Sectors + Gravity Tides (No &lt;canvas/&gt;)</title>
+  <title>Scrollable World • Ring-Segment Tides + Snap-to-Center</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root{
       --world-size: 4000px;
-      --center-r: 80;                /* central circle radius (px) */
-      --arc-width: 24;               /* width of yellow arc sectors (px) */
+      --center-r: 80;              /* central circle radius (px) */
       --grid-step: 80px;
 
       --bg-1:#0b0f14; --fg:#eaf2ff; --muted:#8aa4c1;
-      --center-stroke:#7fb3ff;
-      --arc-stroke:#ffc54d;          /* yellow arcs */
-      --arc-stroke-2:#ffb02a;        /* second arc subtle variance */
-      --tide:#23d4c0;                /* teal tides */
+      --center-stroke:#7fb3ff;     /* blue outlines */
+      --tide:#23d4c0;              /* teal tides */
+      --tide2:#22cbb8;             /* second teal (target) */
+
       --point:#1cc8b7;
       --point-active:#ff4d4f;
     }
 
-    html,body{height:100%;margin:0;background:var(--bg-1);color:var(--fg);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    html,body{height:100%;margin:0;background:var(--bg-1);color:var(--fg);
+      font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
 
     .viewport{
       position:relative;height:100%;overflow:auto;overscroll-behavior:contain;cursor:grab;
+      scroll-behavior:smooth;
       background:
         linear-gradient(90deg,#0b0f14 0,#0b0f14 calc(var(--grid-step) - 1px),#0b2135 calc(var(--grid-step) - 1px),#0b2135 var(--grid-step)),
         linear-gradient(180deg,#0b0f14 0,#0b0f14 calc(var(--grid-step) - 1px),#0b2135 calc(var(--grid-step) - 1px),#0b2135 var(--grid-step));
@@ -40,7 +41,6 @@
         repeating-linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.03) 1px, transparent 1px, transparent 40px);
     }
 
-    /* preset points as HTML dots */
     .point{
       position:absolute; border-radius:50%;
       width: calc(var(--point-r) * 2); height: calc(var(--point-r) * 2);
@@ -55,7 +55,6 @@
       transform: scale(1.08); z-index:5;
     }
 
-    /* fixed overlay HUD */
     .overlay{position:fixed;inset:0;pointer-events:none}
     .legend{
       position:fixed;right:16px;top:16px;background:rgba(7,10,16,0.8);
@@ -81,19 +80,15 @@
     <div id="world" class="world" aria-label="Scrollable world plane"></div>
   </div>
 
-  <!-- SVG overlay -->
+  <!-- SVG overlay (no yellow arcs anymore) -->
   <svg id="hud" class="overlay" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-    <!-- Curved sector arcs (yellow) -->
-    <path id="arc1" d="" fill="none" stroke="var(--arc-stroke)" stroke-width="var(--arc-width)" stroke-linecap="round" />
-    <path id="arc2" d="" fill="none" stroke="var(--arc-stroke-2)" stroke-width="var(--arc-width)" stroke-linecap="round" opacity="0.95" />
-
-    <!-- Tidal bulges (teal) -->
-    <path id="tideCenter" d="" fill="var(--tide)" fill-opacity="0.9" stroke="none"/>
-    <path id="tideTarget" d="" fill="var(--tide)" fill-opacity="0.6" stroke="none"/>
+    <!-- Tidal ring segments -->
+    <path id="tideCenter" d="" fill="var(--tide)"  fill-opacity="0.9" stroke="none"/>
+    <path id="tideTarget" d="" fill="var(--tide2)" fill-opacity="0.75" stroke="none"/>
 
     <!-- Central & target outlines -->
     <circle id="centerCircle" cx="0" cy="0" r="0" fill="none" stroke="var(--center-stroke)" stroke-width="2.5"/>
-    <circle id="targetCircle" cx="0" cy="0" r="0" fill="none" stroke="var(--center-stroke)" stroke-width="2.2" opacity="0.8"/>
+    <circle id="targetCircle" cx="0" cy="0" r="0" fill="none" stroke="var(--center-stroke)" stroke-width="2.2" opacity="0.9"/>
   </svg>
 
   <div class="crosshair"></div>
@@ -110,13 +105,15 @@
     // ====== CONFIG ======
     const WORLD_SIZE = 4000;
     const CENTER_R   = 80;
-    const ARC_WIDTH  = 24;          // visual width of yellow arcs
-    const CURVE_K    = 1.1;         // arc curvature factor (h = CURVE_K * chordLength)
-    const ANIM_MS    = 380;         // duration of snap transition
-    const TIDE_KC    = 2800;        // central tide visual scale (tuned)
-    const TIDE_KP    = 1800;        // target tide visual scale (tuned)
-    const TIDE_MAX   = 120;         // clamp on tidal bulge length
-    const TIDE_MIN   = 2;           // tiny floor to keep shape stable
+
+    // tide visuals
+    const TIDE_WIDTH_MIN = 0.35;  // radians
+    const TIDE_WIDTH_MAX = 1.20;  // radians
+    const TIDE_MAX       = 120;   // px
+    const TIDE_MIN       = 2;     // px
+    const TIDE_KC        = 2800;  // central tide scale
+    const TIDE_KP        = 1800;  // target tide scale
+    const ANIM_MS        = 360;
 
     // ====== PRESET POINTS ======
     const PRESET_POINTS = [
@@ -137,12 +134,9 @@
     // ====== DOM ======
     const viewport = document.getElementById('app');
     const world    = document.getElementById('world');
-    const hud      = document.getElementById('hud');
 
-    const arc1     = document.getElementById('arc1');
-    const arc2     = document.getElementById('arc2');
-    const tideC    = document.getElementById('tideCenter');
-    const tideT    = document.getElementById('tideTarget');
+    const tideC = document.getElementById('tideCenter');
+    const tideT = document.getElementById('tideTarget');
 
     const centerCircle = document.getElementById('centerCircle');
     const targetCircle = document.getElementById('targetCircle');
@@ -167,24 +161,21 @@
     });
 
     // ====== Helpers ======
+    const TAU = Math.PI * 2;
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const lerp  = (a, b, t) => a + (b - a) * t;
-    const TAU   = Math.PI * 2;
+    const ease  = t => t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2;
 
-    function easeInOutCubic(t){
-      return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
-    }
-    function normAngle(a){ a = (a % TAU + TAU) % TAU; return a; }
-    function lerpAngle(a, b, t){
+    const normAngle = a => (a%TAU + TAU)%TAU;
+    function lerpAngle(a,b,t){
       a = normAngle(a); b = normAngle(b);
       let d = b - a;
       if (d > Math.PI) d -= TAU;
       if (d < -Math.PI) d += TAU;
       return a + d * t;
     }
-    function polar(cx, cy, r, ang){ return {x: cx + r*Math.cos(ang), y: cy + r*Math.sin(ang)}; }
-    function length(x, y){ return Math.hypot(x, y); }
-    function w2o(x, y){ return { x: x - viewport.scrollLeft, y: y - viewport.scrollTop }; }
+    function w2o(x,y){ return { x: x - viewport.scrollLeft, y: y - viewport.scrollTop }; }
+    function polar(cx, cy, r, a){ return { x: cx + r*Math.cos(a), y: cy + r*Math.sin(a) }; }
 
     function worldCenter(){
       return {
@@ -206,62 +197,53 @@
       return { p:best, d: Math.sqrt(bestD2) };
     }
 
-    // Build arc path between two world points using circle center "C" (world)
-    function arcPathThrough(Cx, Cy, R, Sx, Sy, Ex, Ey){
-      const Sxo = Sx - viewport.scrollLeft, Syo = Sy - viewport.scrollTop;
-      const Exo = Ex - viewport.scrollLeft, Eyo = Ey - viewport.scrollTop;
-      const Cxo = Cx - viewport.scrollLeft, Cyo = Cy - viewport.scrollTop;
+    // Build an annular ring-segment (no pointy tip):
+    // bounded by radii [rBase, rBase + amp], over angle [ang-W, ang+W]
+    function ringLobePath(cx, cy, rBase, amp, ang, W){
+      const r1 = rBase;
+      const r2 = rBase + amp;
 
-      const aS = Math.atan2(Syo - Cyo, Sxo - Cxo);
-      const aE = Math.atan2(Eyo - Cyo, Exo - Cxo);
+      const a1 = ang - W;
+      const a2 = ang + W;
 
-      // choose minor arc by default; sweep direction based on sign
-      let dAng = aE - aS;
-      if (dAng <= -Math.PI) dAng += TAU;
-      if (dAng > Math.PI)   dAng -= TAU;
+      const P1 = w2o(...Object.values(polar(cx, cy, r1, a1)));
+      const P2 = w2o(...Object.values(polar(cx, cy, r2, a1)));
+      const P3 = w2o(...Object.values(polar(cx, cy, r2, a2)));
+      const P4 = w2o(...Object.values(polar(cx, cy, r1, a2)));
 
-      const sweep = dAng >= 0 ? 1 : 0;
-      const large = Math.abs(dAng) > Math.PI ? 1 : 0;
-
-      return `M ${Sxo.toFixed(2)} ${Syo.toFixed(2)} A ${R.toFixed(2)} ${R.toFixed(2)} 0 ${large} ${sweep} ${Exo.toFixed(2)} ${Eyo.toFixed(2)}`;
-    }
-
-    // Tidal lobe attached to a circle (world coords)
-    function tideLobePath(cx, cy, rBase, ang, amp){
-      // width (angle span) grows with amplitude
-      const W = clamp(0.35 + 0.004 * amp, 0.35, 1.15); // radians
-      const L = clamp(amp, TIDE_MIN, TIDE_MAX);
-
-      const Lw = polar(cx, cy, rBase, ang - W);
-      const Rw = polar(cx, cy, rBase, ang + W);
-      const Tip = polar(cx, cy, rBase + L, ang);
-
-      // control points push outward to make a rounded bulge
-      const C1 = polar(cx, cy, rBase + L*0.85, ang - W*0.35);
-      const C2 = polar(cx, cy, rBase + L*0.85, ang + W*0.35);
-
-      const Lwo = w2o(Lw.x, Lw.y);
-      const Rwo = w2o(Rw.x, Rw.y);
-      const Tipo = w2o(Tip.x, Tip.y);
-      const C1o  = w2o(C1.x, C1.y);
-      const C2o  = w2o(C2.x, C2.y);
-
-      const arcLarge = (2*W) > Math.PI ? 1 : 0;
-      // inner arc back along the base circle (clockwise)
-      const centerOv = w2o(cx, cy);
+      const large = (2*W > Math.PI) ? 1 : 0;
 
       return [
-        `M ${Lwo.x.toFixed(2)} ${Lwo.y.toFixed(2)}`,
-        `Q ${C1o.x.toFixed(2)} ${C1o.y.toFixed(2)} ${Tipo.x.toFixed(2)} ${Tipo.y.toFixed(2)}`,
-        `Q ${C2o.x.toFixed(2)} ${C2o.y.toFixed(2)} ${Rwo.x.toFixed(2)} ${Rwo.y.toFixed(2)}`,
-        `A ${rBase} ${rBase} 0 ${arcLarge} 0 ${Lwo.x.toFixed(2)} ${Lwo.y.toFixed(2)}`,
+        `M ${P1.x.toFixed(2)} ${P1.y.toFixed(2)}`,
+        `L ${P2.x.toFixed(2)} ${P2.y.toFixed(2)}`,
+        `A ${r2} ${r2} 0 ${large} 1 ${P3.x.toFixed(2)} ${P3.y.toFixed(2)}`,
+        `L ${P4.x.toFixed(2)} ${P4.y.toFixed(2)}`,
+        `A ${r1} ${r1} 0 ${large} 0 ${P1.x.toFixed(2)} ${P1.y.toFixed(2)}`,
         `Z`
       ].join(' ');
     }
 
-    // ====== State for animation ======
+    // ====== Animated params ======
     let activeId = -1;
-    let anim = null; // {t0, t1, from:{ang,d,rp}, to:{ang,d,rp}}
+    let anim = null; // {t0,t1, from:{ang,d,rp}, to:{ang,d,rp}}
+
+    function currentParams(){
+      const {cx, cy} = worldCenter();
+      const {p, d} = closestTo(cx, cy);
+      if (!p) return null;
+
+      const base = { ang: Math.atan2(p.y - cy, p.x - cx), d, rp: p.r };
+      if (!anim) return base;
+
+      const now = performance.now();
+      const t = clamp((now - anim.t0)/(anim.t1 - anim.t0), 0, 1);
+      const s = ease(t);
+      return {
+        ang: lerpAngle(anim.from.ang, anim.to.ang, s),
+        d:   lerp(anim.from.d,   anim.to.d,   s),
+        rp:  lerp(anim.from.rp,  anim.to.rp,  s)
+      };
+    }
 
     function startAnim(from, to){
       const now = performance.now();
@@ -269,7 +251,7 @@
       requestAnimationFrame(frame);
     }
 
-    // ====== Render ======
+    // ====== Render loop ======
     let raf = null;
     function schedule(){ if(!raf) raf = requestAnimationFrame(frame); }
 
@@ -281,75 +263,54 @@
       const {p, d} = closestTo(cx, cy);
       if (!p) return;
 
-      // Highlight active dot
+      // highlight point
       for (const q of points) q.el.classList.toggle('active', q === p);
 
-      // If snapping target changed, start an interpolation
-      const rpNew = p.r;
+      // if target changed -> animate
       const angNew = Math.atan2(p.y - cy, p.x - cx);
-      const dNew = d;
-
       if (activeId !== p.id){
-        const cur = currentParams(); // get current drawing params as "from"
-        startAnim(cur ?? {ang: angNew, d: dNew, rp: rpNew}, {ang: angNew, d: dNew, rp: rpNew});
+        const cur = currentParams() || {ang: angNew, d, rp: p.r};
+        startAnim(cur, {ang: angNew, d, rp: p.r});
         activeId = p.id;
       }
 
-      // Compute current parameters (possibly interpolated)
-      const pr = currentParams() || {ang: angNew, d: dNew, rp: rpNew};
+      const pr = currentParams() || {ang: angNew, d, rp: p.r};
 
-      // Endpoints along IL from inner tangent to near-side tangent of target circle
-      const ri = CENTER_R;
-      const roRaw = pr.d - pr.rp;
-      const ro = Math.max(ri + 1, roRaw);
-
-      const Sw = polar(cx, cy, ri, pr.ang);
-      const Ew = polar(cx, cy, ro, pr.ang);
-
-      // Draw target circle (for reference)
+      // reference: target circle (blue)
       const targetOv = w2o(p.x, p.y);
       targetCircle.setAttribute('cx', targetOv.x);
       targetCircle.setAttribute('cy', targetOv.y);
       targetCircle.setAttribute('r', p.r);
 
-      // ---- Curved sectors (two arcs from S to E on opposite bowed sides) ----
-      // chord geometry for arc centers
-      const vx = Ew.x - Sw.x, vy = Ew.y - Sw.y;
-      const L  = Math.hypot(vx, vy) || 1e-6;
-      const mx = (Sw.x + Ew.x)/2, my = (Sw.y + Ew.y)/2;
-      // unit normal (rotate chord by +90°)
-      const nx = -vy / L, ny = vx / L;
+      // TIDE amplitude (same density: m ~ r^3, tidal ~ m / d^3)
+      const ri = CENTER_R;
+      const m1 = ri*ri*ri;
+      const m2 = pr.rp*pr.rp*pr.rp;
+      const distSafe = Math.max(pr.d, ri + pr.rp + 1);
 
-      const h  = CURVE_K * L;                          // how far the big-circle center from chord
-      const R  = Math.sqrt((L*0.5)*(L*0.5) + h*h);     // circle radius that passes through S and E
+      const ampCenter = clamp(TIDE_KC * (m2 / (distSafe*distSafe*distSafe)) * (ri/200), TIDE_MIN, TIDE_MAX);
+      const ampTarget = clamp(TIDE_KP * (m1 / (distSafe*distSafe*distSafe)) * (p.r/200),  TIDE_MIN, TIDE_MAX);
 
-      const C1w = {x: mx + nx*h, y: my + ny*h};
-      const C2w = {x: mx - nx*h, y: my - ny*h};
+      // Width grows with amplitude, clamped:
+      const Wc = clamp(TIDE_WIDTH_MIN + 0.004 * ampCenter, TIDE_WIDTH_MIN, TIDE_WIDTH_MAX);
+      const Wt = clamp(TIDE_WIDTH_MIN + 0.004 * ampTarget, TIDE_WIDTH_MIN, TIDE_WIDTH_MAX);
 
-      arc1.setAttribute('d', arcPathThrough(C1w.x, C1w.y, R, Sw.x, Sw.y, Ew.x, Ew.y));
-      arc2.setAttribute('d', arcPathThrough(C2w.x, C2w.y, R, Sw.x, Sw.y, Ew.x, Ew.y));
+      // Build ring segments:
+      // - Center tide: base is the central circle (outer boundary = ri+amp), centered at pr.ang
+      tideC.setAttribute('d', ringLobePath(cx, cy, ri, ampCenter, pr.ang, Wc));
 
-      // ---- Tides (teal) ----
-      // Same density -> m ∝ r^3
-      const m1 = Math.pow(ri, 3);
-      const m2 = Math.pow(pr.rp, 3);
-      const dd = Math.max(pr.d, ri + pr.rp + 1); // avoid zero
+      // - Target tide: base is the target circle, lobe toward the center (angle + PI)
+      tideT.setAttribute('d', ringLobePath(p.x, p.y, p.r, ampTarget, pr.ang + Math.PI, Wt));
 
-      const ampCenter = clamp(TIDE_KC * (m2 / Math.pow(dd, 3)) * (ri/200), TIDE_MIN, TIDE_MAX);
-      const ampTarget = clamp(TIDE_KP * (m1 / Math.pow(dd, 3)) * (p.r/200), TIDE_MIN, TIDE_MAX);
+      // Legend
+      const ro = Math.max(ri + 1, pr.d - p.r);
+      legendId.textContent = String(p.id);
+      legendDist.textContent = d.toFixed(1);
+      legendOuter.textContent = ro.toFixed(1);
+      legendWcx.textContent = Math.round(cx);
+      legendWcy.textContent = Math.round(cy);
 
-      // near-side bulge on center, far-side on target
-      tideC.setAttribute('d', tideLobePath(cx, cy, ri, pr.ang, ampCenter));
-      tideT.setAttribute('d', tideLobePath(p.x, p.y, p.r, pr.ang + Math.PI, ampTarget));
-
-      // ---- Legend ----
-      document.getElementById('closestId').textContent = String(p.id);
-      document.getElementById('dist').textContent = d.toFixed(1);
-      document.getElementById('outer').textContent = (ro).toFixed(1);
-      document.getElementById('wcx').textContent = Math.round(cx);
-      document.getElementById('wcy').textContent = Math.round(cy);
-
-      // keep animation running until finished
+      // keep anim running
       if (anim){
         const now = performance.now();
         if (now < anim.t1) requestAnimationFrame(frame);
@@ -357,48 +318,27 @@
       }
     }
 
-    // Compute parameters used for drawing right now (with interpolation if active)
-    function currentParams(){
-      const {cx, cy} = worldCenter();
-      let {p, d} = closestTo(cx, cy);
-      if (!p) return null;
-
-      const angCur = Math.atan2(p.y - cy, p.x - cx);
-      const rpCur  = p.r;
-      const dCur   = d;
-
-      if (!anim) return { ang: angCur, d: dCur, rp: rpCur };
-
-      const now = performance.now();
-      const t = clamp((now - anim.t0) / (anim.t1 - anim.t0), 0, 1);
-      const s = easeInOutCubic(t);
-
-      return {
-        ang: lerpAngle(anim.from.ang, anim.to.ang, s),
-        d:   lerp(anim.from.d,   anim.to.d,   s),
-        rp:  lerp(anim.from.rp,  anim.to.rp,  s)
-      };
-    }
-
-    // ====== Init scroll near center ======
+    // ====== Init & events ======
     viewport.scrollLeft = (WORLD_SIZE - viewport.clientWidth)/2;
     viewport.scrollTop  = (WORLD_SIZE - viewport.clientHeight)/2;
 
-    // Event listeners
     viewport.addEventListener('scroll', () => schedule(), {passive:true});
     window.addEventListener('resize', () => { updateCenterCircle(); schedule(); });
 
-    // Optional drag-to-pan
+    // Drag-to-pan + SNAP ON RELEASE to center the active point
     (function enableDragPan(){
       let dragging=false, sx=0, sy=0, sl=0, st=0, pid=0;
+
       const clampScroll = () => {
         viewport.scrollLeft = clamp(viewport.scrollLeft, 0, WORLD_SIZE - viewport.clientWidth);
         viewport.scrollTop  = clamp(viewport.scrollTop , 0, WORLD_SIZE - viewport.clientHeight);
       };
+
       viewport.addEventListener('pointerdown', (e)=>{
         dragging=true; pid=e.pointerId; viewport.setPointerCapture(pid);
         viewport.classList.add('grabbing'); sx=e.clientX; sy=e.clientY; sl=viewport.scrollLeft; st=viewport.scrollTop;
       });
+
       viewport.addEventListener('pointermove', (e)=>{
         if(!dragging) return;
         const dx=e.clientX-sx, dy=e.clientY-sy;
@@ -406,13 +346,28 @@
         viewport.scrollTop  = st - dy;
         clampScroll(); schedule();
       });
-      function end(){ dragging=false; viewport.classList.remove('grabbing'); }
+
+      function end(){
+        if (dragging){
+          // Snap the active point to the center after release
+          const {cx, cy} = worldCenter();
+          const {p} = closestTo(cx, cy);
+          if (p){
+            const targetLeft = p.x - viewport.clientWidth/2;
+            const targetTop  = p.y - viewport.clientHeight/2;
+            viewport.scrollTo({ left: clamp(targetLeft, 0, WORLD_SIZE - viewport.clientWidth),
+                                top:  clamp(targetTop , 0, WORLD_SIZE - viewport.clientHeight),
+                                behavior: 'smooth' });
+          }
+        }
+        dragging=false; viewport.classList.remove('grabbing');
+      }
       viewport.addEventListener('pointerup', end);
       viewport.addEventListener('pointercancel', end);
       viewport.addEventListener('pointerleave', end);
     })();
 
-    // First paint
+    // first paint
     updateCenterCircle();
     frame();
   })();
